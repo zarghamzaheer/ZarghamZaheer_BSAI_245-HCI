@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Usability Tracker (student version)
+  The JavaScript is inside a CDATA block so characters like < > & are safe in XML.
+-->
+<usabilityTracker version="2.0">
+
+  <metadata>
+    <title>Simple Usability Tracker</title>
+    <description>Tracks clicks, mouse movement, and scroll depth to build heatmaps.</description>
+    <author>Student Project</author>
+  </metadata>
+
+  <settings>
+    <mouseMoveSampleMs>250</mouseMoveSampleMs>
+    <maxLogs>5000</maxLogs>
+    <maxTextLength>30</maxTextLength>
+    <logToConsole>true</logToConsole>
+    <ignoreInputs>true</ignoreInputs>
+  </settings>
+
+  <script type="text/javascript"><![CDATA[
+(function () {
+  'use strict';
+
+  // ---------- 1. SETTINGS (easy to change) ----------
+  var CONFIG = {
+    mouseMoveSampleMs: 250,   // how often to save mouse position
+    maxLogs: 5000,            // stop storing after this many events
+    maxTextLength: 30,        // limit saved button/link text
+    logToConsole: true,       // print events in the console
+    ignoreInputs: true        // privacy: never record text from form fields
+  };
+
+  // ---------- 2. DATA STORAGE ----------
+  var usabilityLogs = [];
+  var SESSION_ID = 'session_' + Math.random().toString(36).substring(2, 9);
+  var startTime = performance.now();
+  var maxScrollPercent = 0;
+
+  // Save one event (with a safety limit)
+  function addLog(entry) {
+    if (usabilityLogs.length >= CONFIG.maxLogs) return;
+    entry.sessionId = SESSION_ID;
+    entry.timestamp = new Date().toISOString();
+    entry.timeOffsetMs = Math.round(performance.now() - startTime);
+    usabilityLogs.push(entry);
+    if (CONFIG.logToConsole) {
+      console.log('[Usability Tracker] ' + entry.eventType, entry);
+    }
+  }
+
+  // ---------- 3. HELPER FUNCTIONS ----------
+  // Convert mouse position to position on the WHOLE page
+  function getPageCoordinates(event) {
+    var scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+    var scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    return {
+      x: Math.round(event.clientX + scrollLeft),
+      y: Math.round(event.clientY + scrollTop)
+    };
+  }
+
+  // Is this a form field? (we should not record what people type/see there)
+  function isSensitive(element) {
+    var tag = element.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+  }
+
+  // Get a safe, short piece of text from the clicked element
+  function getSafeText(element) {
+    if (CONFIG.ignoreInputs && isSensitive(element)) return '[hidden]';
+    var text = (element.innerText || '').trim();
+    return text.substring(0, CONFIG.maxTextLength);
+  }
+
+  // ---------- 4. TRACK CLICKS ----------
+  document.addEventListener('click', function (event) {
+    var pos = getPageCoordinates(event);
+    var el = event.target;
+
+    addLog({
+      eventType: 'click',
+      targetTag: el.tagName,
+      targetId: el.id || null,
+      targetClass: typeof el.className === 'string' ? el.className : null,
+      targetText: getSafeText(el),
+      x: pos.x,
+      y: pos.y,
+      viewportW: window.innerWidth,
+      viewportH: window.innerHeight
+    });
+  }, true);
+
+  // ---------- 5. TRACK MOUSE MOVEMENT (throttled) ----------
+  var lastMoveTime = 0;
+  document.addEventListener('mousemove', function (event) {
+    var now = performance.now();
+    if (now - lastMoveTime < CONFIG.mouseMoveSampleMs) return;
+    lastMoveTime = now;
+
+    var pos = getPageCoordinates(event);
+    addLog({ eventType: 'mousemove', x: pos.x, y: pos.y });
+  });
+
+  // ---------- 6. TRACK SCROLL DEPTH ----------
+  var scrollTimer = null;
+  window.addEventListener('scroll', function () {
+    // wait until the user stops scrolling for 200ms
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function () {
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - window.innerHeight;
+      if (scrollable <= 0) return;
+
+      var percent = Math.round((window.pageYOffset / scrollable) * 100);
+      if (percent > maxScrollPercent) {
+        maxScrollPercent = percent;
+        addLog({ eventType: 'scroll', scrollPercent: percent });
+      }
+    }, 200);
+  });
+
+  // ---------- 7. PUBLIC FUNCTIONS ----------
+  window.UsabilityTracker = {
+
+    // Return all logs as an array
+    getLogs: function () {
+      return usabilityLogs;
+    },
+
+    // Return logs as formatted JSON text
+    exportJSON: function () {
+      return JSON.stringify(usabilityLogs, null, 2);
+    },
+
+    // Download logs as a .json file
+    downloadJSON: function () {
+      var blob = new Blob([this.exportJSON()], { type: 'application/json' });
+      var link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = SESSION_ID + '.json';
+      link.click();
+      URL.revokeObjectURL(link.href);
+    },
+
+    // Quick summary of the session
+    getSummary: function () {
+      var clicks = usabilityLogs.filter(function (e) { return e.eventType === 'click'; });
+      var moves = usabilityLogs.filter(function (e) { return e.eventType === 'mousemove'; });
+      return {
+        sessionId: SESSION_ID,
+        totalEvents: usabilityLogs.length,
+        clicks: clicks.length,
+        mouseMoves: moves.length,
+        maxScrollPercent: maxScrollPercent,
+        durationSeconds: Math.round((performance.now() - startTime) / 1000)
+      };
+    },
+
+    // Draw red dots for clicks and faint blue dots for mouse movement
+    renderHeatmap: function () {
+      this.clearOverlay();
+      usabilityLogs.forEach(function (log) {
+        if (log.eventType !== 'click' && log.eventType !== 'mousemove') return;
+
+        var isClick = log.eventType === 'click';
+        var size = isClick ? 14 : 8;
+        var dot = document.createElement('div');
+        dot.className = 'usability-dot';
+        dot.style.position = 'absolute';
+        dot.style.left = (log.x - size / 2) + 'px';
+        dot.style.top = (log.y - size / 2) + 'px';
+        dot.style.width = size + 'px';
+        dot.style.height = size + 'px';
+        dot.style.borderRadius = '50%';
+        dot.style.backgroundColor = isClick ? 'rgba(255, 0, 0, 0.6)' : 'rgba(0, 120, 255, 0.2)';
+        dot.style.pointerEvents = 'none';
+        dot.style.zIndex = '99999';
+        document.body.appendChild(dot);
+      });
+      console.log('[Usability Tracker] Heatmap drawn.');
+    },
+
+    // Remove all dots from the page
+    clearOverlay: function () {
+      var dots = document.querySelectorAll('.usability-dot');
+      dots.forEach(function (dot) { dot.remove(); });
+    }
+  };
+
+  console.log('[Usability Tracker] Started. Session: ' + SESSION_ID);
+})();
+  ]]></script>
+
+  <usage>
+    <step>Open your page and click around, move the mouse, and scroll.</step>
+    <step>In the browser console run: UsabilityTracker.getSummary()</step>
+    <step>Run: UsabilityTracker.renderHeatmap() to see dots on the page.</step>
+    <step>Run: UsabilityTracker.downloadJSON() to save the data.</step>
+  </usage>
+
+</usabilityTracker>
